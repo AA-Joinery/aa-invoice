@@ -881,6 +881,7 @@
       <div class="history-tabs">
         <button id="tabBtnIncome" class="history-tab-btn active" onclick="switchHistoryTab('income')">💰 Income (Invoices)</button>
         <button id="tabBtnExpense" class="history-tab-btn" onclick="switchHistoryTab('expense')">🧾 Expenses (Bills)</button>
+        <button id="tabBtnSync" class="history-tab-btn" onclick="switchHistoryTab('sync')">☁️ Sync</button>
       </div>
       <div class="history-body" id="historyBody"></div>
     </div>
@@ -1363,6 +1364,169 @@ function applyLogo() {
   } catch (e) {}
 }
 
+/* ---------- 云同步 (GitHub Gist) ----------
+   跟工资本工具用的是同一套思路：数据本身一直存在本机 localStorage 里，
+   云同步只是"手动推送/拉取"的搬运工具，不做自动、静默的双向合并。
+   用不同的 Gist 文件名（aa-invoice-data.json）跟工资本区分开，
+   就算用同一个 GitHub 密钥也不会互相覆盖。 */
+const SYNC_KEY = 'aaJoinerySync';
+const SYNC_GIST_FILENAME = 'aa-invoice-data.json';
+
+function loadSync() {
+  try { return JSON.parse(localStorage.getItem(SYNC_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+function saveSync(sync) {
+  try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch (e) {}
+}
+
+function buildSyncPayload() {
+  return {
+    invoices: loadInvoices(),
+    expenses: loadExpenses(),
+    settings: loadSettings(),
+    clients: loadClients(),
+    logo: localStorage.getItem(LOGO_KEY) || null
+  };
+}
+function applySyncPayload(data) {
+  if (data.invoices) localStorage.setItem(STORAGE_KEY, JSON.stringify(data.invoices));
+  if (data.expenses) localStorage.setItem(EXPENSES_KEY, JSON.stringify(data.expenses));
+  if (data.settings) localStorage.setItem(SETTINGS_KEY, JSON.stringify(data.settings));
+  if (data.clients) localStorage.setItem(CLIENTS_KEY, JSON.stringify(data.clients));
+  if (data.logo) localStorage.setItem(LOGO_KEY, data.logo);
+}
+
+async function findExistingSyncGistId(sync) {
+  try {
+    const resp = await fetch('https://api.github.com/gists?per_page=100', {
+      headers: { 'Authorization': 'token ' + sync.token }
+    });
+    if (!resp.ok) return null;
+    const list = await resp.json();
+    const match = list.find(g => g.files && g.files[SYNC_GIST_FILENAME]);
+    return match ? match.id : null;
+  } catch (e) { return null; }
+}
+
+function saveSyncToken() {
+  const t = document.getElementById('syncTokenInput').value.trim();
+  if (!t) { alert('请输入密钥 / Please enter a token'); return; }
+  const sync = loadSync();
+  sync.token = t;
+  saveSync(sync);
+  renderSyncTab();
+}
+
+function disconnectSync() {
+  const sync = loadSync();
+  saveSync({ token: '', gistId: sync.gistId, lastSync: '' });
+  renderSyncTab();
+}
+
+async function pushToCloud() {
+  const sync = loadSync();
+  if (!sync.token) { alert('请先设置 GitHub 同步密钥 / Please set a sync token first'); return; }
+  if (!sync.gistId) {
+    const existing = await findExistingSyncGistId(sync);
+    if (existing) { sync.gistId = existing; saveSync(sync); }
+  }
+  const body = {
+    description: 'A&A Invoice data (private, do not delete)',
+    public: false,
+    files: { [SYNC_GIST_FILENAME]: { content: JSON.stringify(buildSyncPayload(), null, 2) } }
+  };
+  try {
+    let resp;
+    if (sync.gistId) {
+      resp = await fetch(`https://api.github.com/gists/${sync.gistId}`, {
+        method: 'PATCH',
+        headers: { 'Authorization': 'token ' + sync.token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } else {
+      resp = await fetch('https://api.github.com/gists', {
+        method: 'POST',
+        headers: { 'Authorization': 'token ' + sync.token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    }
+    if (!resp.ok) {
+      if (resp.status === 401) alert('推送失败：密钥不正确或已失效，请重新设置密钥。');
+      else alert('推送失败（错误代码 ' + resp.status + '），请检查网络后重试。');
+      return;
+    }
+    const data = await resp.json();
+    sync.gistId = data.id;
+    sync.lastSync = new Date().toLocaleString('zh-CN');
+    saveSync(sync);
+    alert('已成功推送到云端。');
+    renderSyncTab();
+  } catch (e) {
+    alert('推送失败，请检查网络连接后重试。（详细信息：' + e.message + '）');
+  }
+}
+
+async function pullFromCloud() {
+  const sync = loadSync();
+  if (!sync.token) { alert('请先设置 GitHub 同步密钥 / Please set a sync token first'); return; }
+  if (!sync.gistId) {
+    const existing = await findExistingSyncGistId(sync);
+    if (existing) { sync.gistId = existing; saveSync(sync); }
+  }
+  if (!sync.gistId) { alert('还没有云端数据，请先在另一台设备上点一次"推送到云端"。'); return; }
+  if (!confirm('从云端拉取数据会覆盖本机当前的所有发票、支出、客户和设置，确定继续？\n\nPulling will overwrite all local invoices, expenses, clients and settings. Continue?')) return;
+  try {
+    const resp = await fetch(`https://api.github.com/gists/${sync.gistId}`, {
+      headers: { 'Authorization': 'token ' + sync.token }
+    });
+    if (!resp.ok) {
+      if (resp.status === 401) alert('拉取失败：密钥不正确或已失效，请重新设置密钥。');
+      else if (resp.status === 404) alert('拉取失败：找不到云端数据，可能已被删除。');
+      else alert('拉取失败（错误代码 ' + resp.status + '），请检查网络后重试。');
+      return;
+    }
+    const data = await resp.json();
+    const file = data.files && data.files[SYNC_GIST_FILENAME];
+    if (!file) { alert('云端数据格式不正确。'); return; }
+    const parsed = JSON.parse(file.content);
+    applySyncPayload(parsed);
+    sync.lastSync = new Date().toLocaleString('zh-CN');
+    saveSync(sync);
+    alert('已从云端拉取最新数据，页面即将刷新。');
+    location.reload();
+  } catch (e) {
+    alert('拉取失败，请检查网络连接后重试。（详细信息：' + e.message + '）');
+  }
+}
+
+function renderSyncTab() {
+  const body = document.getElementById('historyBody');
+  const sync = loadSync();
+  if (!sync.token) {
+    body.innerHTML = `
+      <div style="max-width:520px;">
+        <p style="font-size:14px; color:#4f4a41; line-height:1.7;">
+          用你的 GitHub 账号设置一个只有你自己能访问的私密同步密钥，之后在任意设备上"推送"或"拉取"，就能让发票、支出、客户和设置在手机和电脑之间搬运。别人访问你的网站看不到你的数据。
+        </p>
+        <label style="display:block; font-size:12px; color:#7a7368; margin-bottom:6px;">GitHub 同步密钥（Personal Access Token）</label>
+        <input type="password" id="syncTokenInput" placeholder="粘贴你的密钥" style="width:100%; max-width:360px; padding:8px 10px; border:1px solid var(--line); border-radius:3px; font-family:inherit; font-size:13px; margin-bottom:12px; display:block;">
+        <button onclick="saveSyncToken()" style="background:var(--ink); color:#fff; border:none; border-radius:3px; padding:9px 18px; font-size:13px; cursor:pointer;">保存密钥</button>
+      </div>`;
+  } else {
+    body.innerHTML = `
+      <div style="max-width:520px;">
+        <div style="font-size:13px; color:#4f4a41; margin-bottom:6px;">同步密钥：已设置 ✓</div>
+        <div style="font-size:13px; color:#4f4a41; margin-bottom:18px;">上次同步：${sync.lastSync || '还没有同步过'}</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+          <button onclick="pullFromCloud()" style="background:transparent; border:1px solid var(--ink); color:var(--ink); border-radius:3px; padding:9px 18px; font-size:13px; cursor:pointer;">拉取云端数据（覆盖本机）</button>
+          <button onclick="pushToCloud()" style="background:var(--ink); color:#fff; border:none; border-radius:3px; padding:9px 18px; font-size:13px; cursor:pointer;">推送到云端（覆盖云端）</button>
+        </div>
+        <button onclick="tapToConfirm(this, disconnectSync)" style="background:none; border:1px solid var(--line); color:#b04a3f; border-radius:3px; padding:6px 12px; font-size:12px; cursor:pointer;">解除同步（清除此设备上的密钥）</button>
+      </div>`;
+  }
+}
+
 const SETTINGS_FIELD_IDS = ['companyName', 'companyPhone', 'companyEmail', 'companyAbn', 'companyExtra', 'bankName', 'bankBSB', 'bankAccNum'];
 
 function escapeHtml(str) {
@@ -1661,12 +1825,14 @@ function switchHistoryTab(tab) {
   currentHistoryYear = null;
   document.getElementById('tabBtnIncome').classList.toggle('active', tab === 'income');
   document.getElementById('tabBtnExpense').classList.toggle('active', tab === 'expense');
+  document.getElementById('tabBtnSync').classList.toggle('active', tab === 'sync');
   renderHistory();
 }
 
 function renderHistory(selectedYear) {
   currentHistoryYear = selectedYear || null;
   if (currentHistoryTab === 'expense') renderExpenseTab(selectedYear);
+  else if (currentHistoryTab === 'sync') renderSyncTab();
   else renderIncomeTab(selectedYear);
 }
 
