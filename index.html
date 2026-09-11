@@ -1984,8 +1984,8 @@ function renderIncomeTab(selectedYear) {
         <td class="num">${fmt(r.subtotal)}</td>
         <td class="num">${fmt(r.gst)}</td>
         <td class="num">${fmt(r.total)}</td>
-        <td class="num">${fmt(paidAmt)}${paidAmt > 0.004 ? `<span class="cell-sub">${fmt(paidExGst)} + GST ${fmt(paidGstPart)}</span>` : ''}</td>
-        <td class="num">${fmt(remaining)}${remaining > 0.004 ? `<span class="cell-sub">${fmt(remExGst)} + GST ${fmt(remGstPart)}</span>` : ''}</td>
+        <td class="num">${fmt(paidAmt)}${status === 'partial' ? `<span class="cell-sub">${fmt(paidExGst)} + GST ${fmt(paidGstPart)}</span>` : ''}</td>
+        <td class="num">${fmt(remaining)}${status === 'partial' ? `<span class="cell-sub">${fmt(remExGst)} + GST ${fmt(remGstPart)}</span>` : ''}</td>
         <td><span class="status-badge ${status}">${status}</span></td>
         <td class="actions">${actions}</td>
       </tr>`;
