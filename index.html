@@ -631,6 +631,7 @@
   table.record-table th.num, table.record-table td.num { text-align: right; }
   table.record-table td { padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   table.record-table td.actions { white-space: normal; min-width: 160px; }
+  table.record-table td .cell-sub { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
   table.record-table td.actions button {
     border: 1px solid var(--line);
     background: #fff;
@@ -1810,7 +1811,7 @@ function recordInvoicePayment(invNum) {
   const paidSoFar = getAmountPaid(rec);
   const remaining = Math.max(0, rec.total - paidSoFar);
   const input = prompt(
-    `发票总额 ${fmt(rec.total)}\n已付 ${fmt(paidSoFar)}，还剩 ${fmt(remaining)}\n\n这次收到多少钱？ / Amount received this time:`,
+    `发票总额（含GST） ${fmt(rec.total)}\n已付 ${fmt(paidSoFar)}，还剩 ${fmt(remaining)}\n\n这次银行实际到账多少钱？（含GST，不用自己拆分）/ Amount actually received this time (incl. GST):`,
     remaining > 0 ? remaining.toFixed(2) : ''
   );
   if (input === null) return;
@@ -1960,6 +1961,11 @@ function renderIncomeTab(selectedYear) {
       const status = r.status || 'unpaid';
       const paidAmt = getAmountPaid(r);
       const remaining = Math.max(0, r.total - paidAmt);
+      const ratio = r.total > 0 ? (r.subtotal / r.total) : 1;
+      const paidExGst = paidAmt * ratio;
+      const paidGstPart = paidAmt - paidExGst;
+      const remExGst = remaining * ratio;
+      const remGstPart = remaining - remExGst;
       let actions = `<button onclick="loadInvoiceRecord('${safe}')">Load</button><button onclick="downloadInvoiceRecordPDF('${safe}')">PDF</button>`;
       if (status === 'void') {
         actions += `<button onclick="setInvoiceStatus('${safe}', 'unpaid')">Restore</button>`;
@@ -1978,8 +1984,8 @@ function renderIncomeTab(selectedYear) {
         <td class="num">${fmt(r.subtotal)}</td>
         <td class="num">${fmt(r.gst)}</td>
         <td class="num">${fmt(r.total)}</td>
-        <td class="num">${fmt(paidAmt)}</td>
-        <td class="num">${fmt(remaining)}</td>
+        <td class="num">${fmt(paidAmt)}${paidAmt > 0.004 ? `<span class="cell-sub">${fmt(paidExGst)} + GST ${fmt(paidGstPart)}</span>` : ''}</td>
+        <td class="num">${fmt(remaining)}${remaining > 0.004 ? `<span class="cell-sub">${fmt(remExGst)} + GST ${fmt(remGstPart)}</span>` : ''}</td>
         <td><span class="status-badge ${status}">${status}</span></td>
         <td class="actions">${actions}</td>
       </tr>`;
