@@ -546,6 +546,7 @@
     border-radius: 3px;
   }
   .status-badge.unpaid { background: #F6E9D8; color: #8a5a1f; }
+  .status-badge.partial { background: #DCE7F0; color: #2A5478; }
   .status-badge.paid { background: #DEEFE0; color: #2E5339; }
   .status-badge.void { background: #eee; color: #999; text-decoration: line-through; }
 
@@ -1771,6 +1772,7 @@ function saveCurrentInvoice(silent) {
   if (idx >= 0) {
     data.status = list[idx].status || 'unpaid';
     data.paidDate = list[idx].paidDate || null;
+    data.amountPaid = list[idx].amountPaid;
     list[idx] = data;
   } else {
     data.status = 'unpaid';
@@ -1785,12 +1787,42 @@ function saveCurrentInvoice(silent) {
   return ok;
 }
 
+function getAmountPaid(r) {
+  if (typeof r.amountPaid === 'number') return r.amountPaid;
+  return r.status === 'paid' ? r.total : 0;
+}
+
 function setInvoiceStatus(invNum, status) {
   const list = loadInvoices();
   const rec = list.find(r => r.invNum === invNum);
   if (!rec) return;
   rec.status = status;
-  rec.paidDate = status === 'paid' ? todayDMY() : (status === 'unpaid' ? null : rec.paidDate);
+  if (status === 'paid') { rec.amountPaid = rec.total; rec.paidDate = todayDMY(); }
+  else if (status === 'unpaid') { rec.amountPaid = 0; rec.paidDate = null; }
+  persistInvoices(list);
+  renderHistory(currentHistoryYear);
+}
+
+function recordInvoicePayment(invNum) {
+  const list = loadInvoices();
+  const rec = list.find(r => r.invNum === invNum);
+  if (!rec) return;
+  const paidSoFar = getAmountPaid(rec);
+  const remaining = Math.max(0, rec.total - paidSoFar);
+  const input = prompt(
+    `发票总额 ${fmt(rec.total)}\n已付 ${fmt(paidSoFar)}，还剩 ${fmt(remaining)}\n\n这次收到多少钱？ / Amount received this time:`,
+    remaining > 0 ? remaining.toFixed(2) : ''
+  );
+  if (input === null) return;
+  const amt = parseFloat(input);
+  if (!amt || amt <= 0) { alert('请输入一个大于 0 的金额 / Please enter an amount greater than 0'); return; }
+  let newPaid = Math.round((paidSoFar + amt) * 100) / 100;
+  if (newPaid > rec.total + 0.01) {
+    if (!confirm(`累计付款 ${fmt(newPaid)} 会超过发票总额 ${fmt(rec.total)}，确定继续吗？`)) return;
+  }
+  rec.amountPaid = newPaid;
+  rec.status = newPaid >= rec.total - 0.01 ? 'paid' : 'partial';
+  if (rec.status === 'paid') rec.paidDate = todayDMY();
   persistInvoices(list);
   renderHistory(currentHistoryYear);
 }
@@ -1878,9 +1910,10 @@ function renderIncomeTab(selectedYear) {
       md.invoiced += r.total;
       md.invoicedGst += r.gst;
       md.count += 1;
-      if (r.status === 'paid') {
-        md.received += r.total;
-        md.receivedGst += r.gst;
+      const paidAmt = getAmountPaid(r);
+      if (paidAmt > 0) {
+        md.received += paidAmt;
+        md.receivedGst += r.total > 0 ? (r.gst * paidAmt / r.total) : 0;
       }
     }
     r._year = year; r._month = month;
@@ -1920,15 +1953,18 @@ function renderIncomeTab(selectedYear) {
   html += `<tr class="total-row"><td>Total</td><td class="num">${fmt(tInvoiced)}</td><td class="num">${fmt(tReceived)}</td><td class="num">${fmt(tGst)}</td><td class="num">${tCount}</td></tr>`;
   html += `</tbody></table></div>`;
 
-  html += `<div class="table-scroll"><table class="record-table"><thead><tr><th>Invoice #</th><th>Date</th><th>Client</th><th class="num">Subtotal</th><th class="num">GST</th><th class="num">Total</th><th>Status</th><th></th></tr></thead><tbody>`;
+  html += `<div class="table-scroll"><table class="record-table"><thead><tr><th>Invoice #</th><th>Date</th><th>Client</th><th class="num">Subtotal</th><th class="num">GST</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Remaining</th><th>Status</th><th></th></tr></thead><tbody>`;
   list.filter(r => r._year === year).sort((a, b) => (b._month - a._month) || (b.savedAt || '').localeCompare(a.savedAt || ''))
     .forEach(r => {
       const safe = r.invNum.replace(/'/g, "\\'");
       const status = r.status || 'unpaid';
+      const paidAmt = getAmountPaid(r);
+      const remaining = Math.max(0, r.total - paidAmt);
       let actions = `<button onclick="loadInvoiceRecord('${safe}')">Load</button><button onclick="downloadInvoiceRecordPDF('${safe}')">PDF</button>`;
       if (status === 'void') {
         actions += `<button onclick="setInvoiceStatus('${safe}', 'unpaid')">Restore</button>`;
       } else {
+        if (status !== 'paid') actions += `<button onclick="recordInvoicePayment('${safe}')">Record payment</button>`;
         actions += status === 'paid'
           ? `<button onclick="setInvoiceStatus('${safe}', 'unpaid')">Mark unpaid</button>`
           : `<button onclick="setInvoiceStatus('${safe}', 'paid')">Mark paid</button>`;
@@ -1942,6 +1978,8 @@ function renderIncomeTab(selectedYear) {
         <td class="num">${fmt(r.subtotal)}</td>
         <td class="num">${fmt(r.gst)}</td>
         <td class="num">${fmt(r.total)}</td>
+        <td class="num">${fmt(paidAmt)}</td>
+        <td class="num">${fmt(remaining)}</td>
         <td><span class="status-badge ${status}">${status}</span></td>
         <td class="actions">${actions}</td>
       </tr>`;
@@ -2003,8 +2041,8 @@ function renderExpenseTab(selectedYear) {
   const now = new Date();
   const curMonthData = (byYear[now.getFullYear()] && byYear[now.getFullYear()][now.getMonth() + 1]) || { paid: 0 };
 
-  const incomeReceived = loadInvoices().filter(r => r.status === 'paid' && parseDMY(r.issueDate) && parseDMY(r.issueDate).year === year)
-    .reduce((s, r) => s + r.total, 0);
+  const incomeReceived = loadInvoices().filter(r => r.status !== 'void' && parseDMY(r.issueDate) && parseDMY(r.issueDate).year === year)
+    .reduce((s, r) => s + getAmountPaid(r), 0);
 
   let html = formHtml;
   html += `<div class="history-summary">
